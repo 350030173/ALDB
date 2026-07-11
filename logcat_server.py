@@ -9,6 +9,14 @@ import time
 import subprocess
 import base64
 import select as _select_mod
+import re
+
+# ========== ANSI 转义序列过滤 ==========
+_ANSI_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\].*?\x07|\x1b\[.*?[a-zA-Z]')
+
+def strip_ansi(text):
+    """去除 ANSI 转义序列（颜色码、光标控制等），保留纯文本"""
+    return _ANSI_RE.sub('', text)
 
 # ========== 真正的 PTY 终端（支持 Frida 等交互程序）==========
 
@@ -31,11 +39,15 @@ class PtyTerminal:
         self.running = False
         self.closed = False
         self._reader_thread = None
+        self._log_file = None     # 日志文件句柄
+        self._log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'CommandLog')
+        self._input_buf = ''      # 输入缓冲（攒到回车才写日志）
 
     # ---- 启动 ----
 
     def start(self, cmd=None):
         """启动终端进程，自动选择最佳后端"""
+        self._open_log()
         if sys.platform == 'win32':
             return self._start_win32(cmd)
         else:
@@ -156,6 +168,7 @@ class PtyTerminal:
                 try:
                     data = self.process.read(4096)
                     if data:
+                        self._log_output(data)
                         self.output_queue.put(data)  # str
                 except Exception:
                     if not self.process.isalive():
@@ -176,6 +189,7 @@ class PtyTerminal:
                     if r:
                         data = os.read(self.master_fd, 4096)
                         if data:
+                            self._log_output(data)
                             self.output_queue.put(data)  # bytes
                         else:
                             break
@@ -217,6 +231,7 @@ class PtyTerminal:
                                 break
                     text = _decode_text(data)
                     if text:
+                        self._log_output(text)
                         self.output_queue.put(text)
                 except Exception:
                     if self.process.poll() is not None:
@@ -235,6 +250,7 @@ class PtyTerminal:
                 if r:
                     data = os.read(self.master_fd, 4096)
                     if data:
+                        self._log_output(data)
                         self.output_queue.put(data)
                     else:
                         break
@@ -247,17 +263,17 @@ class PtyTerminal:
 
     def write(self, data):
         """向终端写入数据（键盘输入）"""
+        # 日志记录：缓冲到回车再写入
+        self._log_input(data)
+
         try:
             if self._is_winpty:
-                # pywinpty: write() 接受 str
                 self.process.write(data)
             elif self._use_pty and self.master_fd is not None:
-                # posix PTY: 写入 master_fd
                 if isinstance(data, str):
                     data = data.encode('utf-8')
                 os.write(self.master_fd, data)
             elif self.process and self.process.stdin:
-                # subprocess 回退
                 if isinstance(data, str):
                     data = data.encode('utf-8')
                 self.process.stdin.write(data)
@@ -312,10 +328,76 @@ class PtyTerminal:
             return self.running and self.process and self.process.poll() is None
         return self.running and self.process and self.process.poll() is None
 
+    # ---- 日志记录 ----
+
+    def _open_log(self):
+        """创建日志文件"""
+        try:
+            os.makedirs(self._log_dir, exist_ok=True)
+            ts = time.strftime('%Y-%m-%d_%H-%M-%S')
+            fname = f'{self.id}_{ts}.txt'
+            self._log_file = open(os.path.join(self._log_dir, fname), 'w', encoding='utf-8')
+            self._log_file.write(f'=== Terminal Log: {self.id} ===\n')
+            self._log_file.write(f'Started: {time.strftime("%Y-%m-%d %H:%M:%S")}\n\n')
+            self._log_file.flush()
+        except Exception as e:
+            print(f"[TERM {self.id}] 无法创建日志文件: {e}")
+            self._log_file = None
+
+    def _log_input(self, data):
+        """缓冲输入，遇到回车时写入日志"""
+        if not self._log_file or self.closed:
+            return
+        try:
+            for ch in data:
+                if ch == '\r' or ch == '\n':
+                    if self._input_buf.strip():
+                        ts = time.strftime('%H:%M:%S')
+                        self._log_file.write(f'[{ts}] > {self._input_buf}\n')
+                        self._log_file.flush()
+                    self._input_buf = ''
+                elif ch == '\x7f' or ord(ch) == 8:  # Backspace
+                    self._input_buf = self._input_buf[:-1]
+                elif ord(ch) >= 32:  # 可打印字符
+                    self._input_buf += ch
+        except Exception:
+            pass
+
+    def _log_output(self, data):
+        """记录终端输出到日志（去除 ANSI 转义序列和多余空行）"""
+        if not self._log_file or self.closed:
+            return
+        try:
+            if isinstance(data, bytes):
+                text = data.decode('utf-8', errors='replace')
+            else:
+                text = data
+            if text:
+                clean = strip_ansi(text)
+                # 去掉连续空行，只保留单个换行
+                clean = re.sub(r'\n\s*\n', '\n', clean)
+                # 去掉行尾的 \r
+                clean = clean.replace('\r', '')
+                if clean.strip():
+                    self._log_file.write(clean)
+                    self._log_file.flush()
+        except Exception:
+            pass
+
     def close(self):
         """关闭终端"""
         self.running = False
         self.closed = True
+        # 关闭日志文件
+        if self._log_file:
+            try:
+                if self._input_buf.strip():
+                    self._log_file.write(f'[---] > {self._input_buf} (未完成)\n')
+                self._log_file.write(f'\n=== Closed: {time.strftime("%Y-%m-%d %H:%M:%S")} ===\n')
+                self._log_file.close()
+                self._log_file = None
+            except Exception:
+                pass
         try:
             if self.process:
                 self.process.terminate()

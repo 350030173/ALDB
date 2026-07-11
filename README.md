@@ -1,4 +1,4 @@
-# ALDB - Android Logcat in Browser
+# ALDB - Android Logcat Display in Browser
 
 安卓日志在浏览器中实时显示，底部集成 PTY 终端，支持 Frida 交互。
 
