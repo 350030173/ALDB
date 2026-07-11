@@ -63,10 +63,42 @@
         #resizeHandle:hover { background: #0e639c; }
         #bottomTerminalWrap {
             flex-shrink: 0; height: 180px; min-height: 60px;
-            max-height: calc(100vh - 100px); border-top: 1px solid #3e3e42; overflow: hidden;
+            max-height: calc(100vh - 100px); border-top: 1px solid #3e3e42;
+            display: flex; flex-direction: column; overflow: hidden;
         }
-        #bottomTerminal { width: 100%; height: 100%; padding: 2px 8px; }
-        #terminalPanel, #terminalHeader, #terminalContainer, #cmdPanel, #mainContainer, #logcatPanel { display: none; }
+        #terminalTabBar {
+            height: 26px; min-height: 26px; background: #1a1a1a;
+            border-bottom: 1px solid #3e3e42; display: flex;
+            align-items: stretch; overflow-x: auto; overflow-y: hidden;
+        }
+        #terminalTabBar::-webkit-scrollbar { height: 0; }
+        .tab {
+            padding: 3px 8px; font-size: 12px; cursor: pointer; color: #858585;
+            border-right: 1px solid #3e3e42; display: flex; align-items: center;
+            gap: 4px; white-space: nowrap; user-select: none; flex-shrink: 0;
+            background: #252526; min-width: 60px;
+        }
+        .tab:hover { color: #d4d4d4; }
+        .tab.active { color: #d4d4d4; background: #1e1e1e; border-bottom: 2px solid #0e639c; }
+        .tab .close {
+            font-size: 13px; line-height: 1; padding: 0 2px; border-radius: 3px;
+            opacity: 0; transition: opacity 0.15s;
+        }
+        .tab:hover .close { opacity: 1; }
+        .tab .close:hover { background: #c75450; color: white; }
+        #newTabBtn {
+            width: 26px; min-width: 26px; height: 26px; border: none; background: transparent;
+            color: #858585; font-size: 16px; cursor: pointer; flex-shrink: 0;
+        }
+        #newTabBtn:hover { color: #d4d4d4; background: #3c3c3c; }
+        #terminalTabContent {
+            flex: 1; overflow: hidden; position: relative;
+        }
+        .term-container {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+        }
+        .term-container:not(.active) { display: none; }
+        #terminalPanel, #terminalHeader, #terminalContainer, #cmdPanel, #mainContainer, #logcatPanel, #bottomTerminal { display: none; }
         .xterm { height: 100%; }
         .xterm .xterm-viewport { background-color: #1e1e1e !important; }
         #toast {
@@ -124,7 +156,10 @@
 <div id="resizeHandle" title=""></div>
 
 <div id="bottomTerminalWrap">
-    <div id="bottomTerminal"></div>
+    <div id="terminalTabBar">
+        <button id="newTabBtn" title="新建终端">+</button>
+    </div>
+    <div id="terminalTabContent"></div>
 </div>
 
 <div id="toast"></div>
@@ -229,7 +264,7 @@ function initFontSizes() {
     }
     if (savedTerm) {
         document.getElementById('termFontSize').value = savedTerm;
-        if (typeof term !== 'undefined' && term) term.options.fontSize = parseInt(savedTerm);
+        tabs.forEach(t => t.term.options.fontSize = parseInt(savedTerm));
     }
 }
 
@@ -298,10 +333,6 @@ async function loadAllSettings() {
 function scheduleSave() {
     if (_saveTimer) clearTimeout(_saveTimer);
     _saveTimer = setTimeout(saveAllSettings, 500);
-}
-function setTermFontSize(size) {
-    if (typeof term !== 'undefined' && term) term.options.fontSize = parseInt(size);
-    localStorage.setItem('termFontSize', size);
 }
 
 // ===================== Logcat 功能 =====================
@@ -479,66 +510,131 @@ function updateMaxLogs() {
     showToast(L.toastMaxLines + maxLogs + ' ' + L.toastLines);
 }
 
-// ===================== 底部 xterm.js 终端 =====================
-let term = null, termWs = null, termFitAddon = null;
+// ===================== 多 Tab 终端 =====================
+const tabs = new Map();    // sessionId → { term, ws, fitAddon, container, el }
+let activeTabId = null;
+let tabCounter = 0;
 
-function initBottomTerminal() {
-    const container = document.getElementById('bottomTerminal');
-    container.innerHTML = '';
+function nextTabName() { tabCounter++; return 'Shell ' + tabCounter; }
+
+function createTab(sessionId, cmd) {
+    const tc = document.getElementById('terminalTabContent');
+    // tab 标签
+    const tabEl = document.createElement('span');
+    tabEl.className = 'tab active';
+    tabEl.innerHTML = '<span class="name">' + nextTabName() + '</span><span class="close">&times;</span>';
+    tabEl.querySelector('.name').onclick = () => switchTab(sessionId);
+    tabEl.querySelector('.close').onclick = (e) => { e.stopPropagation(); closeTab(sessionId); };
+    document.getElementById('newTabBtn').before(tabEl);
+
+    // 终端容器
+    const container = document.createElement('div');
+    container.className = 'term-container active';
+    tc.appendChild(container);
+
     const savedFont = parseInt(localStorage.getItem('termFontSize')) || 13;
-    term = new Terminal({
+    const t = new Terminal({
         fontFamily: 'Consolas, "Courier New", monospace', fontSize: savedFont,
-        theme: {
-            background:'#1e1e1e', foreground:'#d4d4d4', cursor:'#d4d4d4',
+        theme: { background:'#1e1e1e', foreground:'#d4d4d4', cursor:'#d4d4d4',
             selectionBackground:'#264f78', black:'#1e1e1e', red:'#f48771',
             green:'#b5cea8', yellow:'#dcdcaa', blue:'#4fc1ff',
-            magenta:'#c586c0', cyan:'#9cdcfe', white:'#d4d4d4'
-        },
+            magenta:'#c586c0', cyan:'#9cdcfe', white:'#d4d4d4' },
         cursorBlink: true, cursorStyle: 'block', scrollback: 10000, allowTransparency: false
     });
-    termFitAddon = new FitAddon.FitAddon();
-    term.loadAddon(termFitAddon);
-    term.open(container);
-    termFitAddon.fit();
-    term.onData(data => {
-        if (termWs && termWs.readyState === WebSocket.OPEN)
-            termWs.send(JSON.stringify({ type:'input', session_id:'main', data }));
-    });
-    const ro = new ResizeObserver(() => {
-        if (termFitAddon) { termFitAddon.fit(); sendTermResize(); }
-    });
+    const fit = new FitAddon.FitAddon();
+    t.loadAddon(fit);
+    t.open(container);
+
+    const ro = new ResizeObserver(() => { fit.fit(); sendTabResize(sessionId); });
     ro.observe(container);
-    connectTerminalWs(null);
-}
 
-function sendTermResize() {
-    if (termWs && termWs.readyState === WebSocket.OPEN)
-        termWs.send(JSON.stringify({ type:'resize', session_id:'main', cols:term.cols, rows:term.rows }));
-}
-
-function connectTerminalWs(cmd) {
-    if (termWs) termWs.close();
-    termWs = new WebSocket('ws://localhost:8765/terminal');
-    termWs.onopen = () => {
-        termWs.send(JSON.stringify({ type:'create', session_id:'main', cols:term.cols, rows:term.rows, command:cmd }));
+    // WebSocket
+    const ws = new WebSocket('ws://localhost:8765/terminal');
+    ws.onopen = () => {
+        ws.send(JSON.stringify({ type:'create', session_id:sessionId, cols:t.cols||120, rows:t.rows||30, command:cmd }));
     };
-    termWs.onmessage = (e) => {
+    ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'output' && term) {
+        if (msg.type === 'output') {
             if (msg.binary) {
-                const bin = atob(msg.data);
-                const bytes = new Uint8Array(bin.length);
+                const bin = atob(msg.data); const bytes = new Uint8Array(bin.length);
                 for (let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-                term.write(bytes);
-            } else { term.write(msg.data); }
-        } else if (msg.type === 'created') { term.focus(); }
-        else if (msg.type === 'error') { term.writeln('\x1b[31m\u274c '+msg.data+'\x1b[0m'); }
+                t.write(bytes);
+            } else { t.write(msg.data); }
+        } else if (msg.type === 'created') { t.focus(); }
+        else if (msg.type === 'error') { t.writeln('\x1b[31m\u274c '+msg.data+'\x1b[0m'); }
     };
-    termWs.onerror = () => term.writeln('\x1b[31m\u274c Terminal error\x1b[0m');
-    termWs.onclose = () => {};
+    ws.onerror = () => t.writeln('\x1b[31m\u274c Terminal error\x1b[0m');
+    ws.onclose = () => {};
+
+    t.onData(data => {
+        if (ws && ws.readyState === WebSocket.OPEN)
+            ws.send(JSON.stringify({ type:'input', session_id:sessionId, data }));
+    });
+
+    tabs.set(sessionId, { term:t, ws, fitAddon:fit, container, el:tabEl });
+    switchTab(sessionId);
+    return sessionId;
 }
 
-initBottomTerminal();
+function switchTab(sessionId) {
+    if (activeTabId === sessionId) return;
+    // 隐藏旧
+    if (activeTabId && tabs.has(activeTabId)) {
+        const old = tabs.get(activeTabId);
+        old.container.classList.remove('active');
+        old.el.classList.remove('active');
+    }
+    // 显示新
+    activeTabId = sessionId;
+    const cur = tabs.get(sessionId);
+    cur.container.classList.add('active');
+    cur.el.classList.add('active');
+    cur.fitAddon.fit();
+    setTimeout(() => cur.term.focus(), 50);
+    updateTabCloseButtons();
+}
+
+function closeTab(sessionId) {
+    if (tabs.size <= 1) return; // 至少保留 1 个
+    const cur = tabs.get(sessionId);
+    if (cur.ws && cur.ws.readyState === WebSocket.OPEN)
+        cur.ws.send(JSON.stringify({ type:'close', session_id:sessionId }));
+    cur.ws.close();
+    cur.term.dispose();
+    cur.container.remove();
+    cur.el.remove();
+    tabs.delete(sessionId);
+    if (activeTabId === sessionId) {
+        const last = [...tabs.keys()].pop();
+        switchTab(last);
+    }
+    updateTabCloseButtons();
+}
+
+function updateTabCloseButtons() {
+    const onlyOne = tabs.size <= 1;
+    tabs.forEach(tab => { tab.el.querySelector('.close').style.display = onlyOne ? 'none' : ''; });
+}
+
+function sendTabResize(sessionId) {
+    const cur = tabs.get(sessionId);
+    if (cur && cur.ws && cur.ws.readyState === WebSocket.OPEN)
+        cur.ws.send(JSON.stringify({ type:'resize', session_id:sessionId, cols:cur.term.cols, rows:cur.term.rows }));
+}
+
+function setTermFontSize(size) {
+    tabs.forEach(t => t.term.options.fontSize = parseInt(size));
+    localStorage.setItem('termFontSize', size);
+}
+
+// 初始化：创建第一个 tab
+createTab('main', null);
+
+// 点击 + 新建 tab
+document.getElementById('newTabBtn').addEventListener('click', () => {
+    createTab('tab-' + Date.now(), null);
+});
 
 // ===================== 拖拽调整终端高度 =====================
 (function initResize(){
@@ -553,8 +649,9 @@ initBottomTerminal();
         if(!d)return;
         let nH = Math.max(60, Math.min(sH + (sY - e.clientY), window.innerHeight - 100));
         w.style.height = nH + 'px';
-        if(termFitAddon) termFitAddon.fit();
-        sendTermResize();
+        const cur = tabs.get(activeTabId);
+        if (cur) cur.fitAddon.fit();
+        sendTabResize(activeTabId);
     });
     document.addEventListener('mouseup', () => { if(d){ d=false; document.body.style.cursor=''; document.body.style.userSelect=''; saveAllSettings(); } });
 })();

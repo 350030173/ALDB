@@ -11,7 +11,7 @@
 | `websockets` | Python 库 | WebSocket 通信，双击 bat 自动安装 |
 | `pywinpty` | Python 库（可选）| Windows 终端颜色/方向键支持，双击 bat 自动安装 |
 
-## 给别人的一键使用方式
+## 使用方式
 
 ### 前提
 

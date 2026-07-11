@@ -357,8 +357,8 @@ active_terminals = {}
 # ========== WebSocket 处理器 ==========
 
 async def terminal_handler(websocket, path):
-    """处理终端 WebSocket 连接"""
-    session_id = None
+    """处理终端 WebSocket 连接（支持多 Tab）"""
+    my_sessions = set()  # 追踪本连接创建的所有终端
 
     try:
         async for message in websocket:
@@ -375,6 +375,7 @@ async def terminal_handler(websocket, path):
                     term = PtyTerminal(session_id, cols, rows)
                     if term.start(cmd):
                         active_terminals[session_id] = term
+                        my_sessions.add(session_id)
                         asyncio.create_task(push_output(websocket, term))
                         await websocket.send(json.dumps({
                             'type': 'created',
@@ -409,13 +410,15 @@ async def terminal_handler(websocket, path):
                 if session_id in active_terminals:
                     active_terminals[session_id].close()
                     del active_terminals[session_id]
+                    my_sessions.discard(session_id)
 
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
-        if session_id and session_id in active_terminals:
-            active_terminals[session_id].close()
-            del active_terminals[session_id]
+        for sid in list(my_sessions):
+            if sid in active_terminals:
+                active_terminals[sid].close()
+                del active_terminals[sid]
 
 async def push_output(websocket, term):
     """持续推送终端输出到浏览器（兼容 str 和 bytes）"""
