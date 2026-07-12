@@ -55,3 +55,4 @@ pywinpty>=2.0           # Windows 终端 PTY 支持（可选，无此库也能�
 |------|------|------|
 | 8765 | WebSocket | logcat 日志流 + 终端通信 |
 | 8766 | HTTP | 清缓冲区、一次性命令执行 |
+<img width="1259" height="671" alt="image" src="https://github.com/user-attachments/assets/03fc73be-f01b-4322-9a2d-af60d6eb4457" />
