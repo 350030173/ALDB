@@ -5,3 +5,5 @@ __pycache__/
 logcat_settings.json
 CommandLog/
 logcat/
+上传.bat
+下载.bat
