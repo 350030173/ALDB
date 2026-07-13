@@ -679,10 +679,43 @@ import http.server
 
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logcat_settings.json')
 
+# ========== Logcat 日志保存开关 ==========
+LOGCAT_LOG_ENABLED = False
+LOGCAT_LOG_FILE = None
+LOGCAT_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logcat')
+
+def _open_logcat_log():
+    global LOGCAT_LOG_FILE
+    try:
+        os.makedirs(LOGCAT_LOG_DIR, exist_ok=True)
+        ts = time.strftime('%Y-%m-%d_%H-%M-%S')
+        path = os.path.join(LOGCAT_LOG_DIR, f'logcat_{ts}.txt')
+        LOGCAT_LOG_FILE = open(path, 'w', encoding='utf-8')
+        print(f"[LOGCAT] 日志保存开启: {path}")
+    except Exception as e:
+        print(f"[LOGCAT] 无法创建日志文件: {e}")
+
+def _close_logcat_log():
+    global LOGCAT_LOG_FILE
+    if LOGCAT_LOG_FILE:
+        LOGCAT_LOG_FILE.close()
+        LOGCAT_LOG_FILE = None
+
 class HTTPHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
-        if self.path == '/settings':
+        if self.path.startswith('/logcat-toggle'):
+            global LOGCAT_LOG_ENABLED
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            enable = qs.get('enable', ['0'])[0] == '1'
+            LOGCAT_LOG_ENABLED = enable
+            if enable:
+                _open_logcat_log()
+            else:
+                _close_logcat_log()
+            self._send_json(200, {'success': True, 'enabled': LOGCAT_LOG_ENABLED})
+        elif self.path == '/settings':
             try:
                 if os.path.exists(SETTINGS_FILE):
                     with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
@@ -706,6 +739,19 @@ class HTTPHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(b'{"success": true}')
+
+        elif self.path == '/logcat-write':
+            try:
+                if LOGCAT_LOG_ENABLED and LOGCAT_LOG_FILE:
+                    lines = body.split('\n')
+                    for line in lines:
+                        LOGCAT_LOG_FILE.write(line + '\n')
+                    LOGCAT_LOG_FILE.flush()
+                    self._send_json(200, {'success': True, 'count': len(lines)})
+                else:
+                    self._send_json(200, {'success': False, 'reason': 'not enabled'})
+            except Exception as e:
+                self._send_json(500, {'error': str(e)})
 
         elif self.path == '/settings':
             try:

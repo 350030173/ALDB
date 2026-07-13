@@ -116,6 +116,7 @@
     <button class="danger" onclick="clearPhoneBuffer()" data-i18n="clearBuf">📱 清缓冲区</button>
     <button onclick="togglePause()" id="pauseBtn" class="secondary" data-i18n="pause">⏸️ 暂停</button>
     <button onclick="toggleAutoScroll()" id="autoScrollBtn" class="active" data-i18n="autoFollow">📜 自动跟随</button>
+    <button onclick="toggleLogSave()" id="logSaveBtn" class="secondary" data-i18n="logSaveOff">💾 日志保存: 关</button>
 
     <input type="text" id="pkgFilter" data-i18n-placeholder="pkgPH" oninput="applyFilters();scheduleSave()" style="width:150px;">
     <input type="text" id="tagFilter" data-i18n-placeholder="tagPH" oninput="applyFilters();scheduleSave()" style="width:150px;">
@@ -179,6 +180,7 @@ const I18N = {
         toastAutoOn: '📜 自动跟随已开启', toastAutoOff: '📜 自动跟随已关闭',
         toastMaxLines: '📦 最大保留: ', toastLines: '条', countFmt: '{total} 条 (显示 {visible} 条)',
         resizeHandle: '拖拽调整终端高度', scrollBtn: '滚动到底部',
+        logSaveOn: '💾 日志保存: 开', logSaveOff: '💾 日志保存: 关',
         title: 'Logcat查看器', toastUnknown: '未知错误',
     },
     en: {
@@ -193,6 +195,7 @@ const I18N = {
         toastAutoOn: '📜 Auto-scroll on', toastAutoOff: '📜 Auto-scroll off',
         toastMaxLines: '📦 Max lines: ', toastLines: '', countFmt: '{total} lines ({visible} shown)',
         resizeHandle: 'Drag to resize terminal', scrollBtn: 'Scroll to bottom',
+        logSaveOn: '💾 Log Save: ON', logSaveOff: '💾 Log Save: OFF',
         title: 'Logcat Viewer', toastUnknown: 'Unknown error',
     }
 };
@@ -279,7 +282,7 @@ let _saveTimer = null;
 
 function saveAllSettings() {
     const s = {
-        paused, autoScroll, maxLogs,
+        paused, autoScroll, maxLogs, logSaveEnabled,
         pkgFilter: document.getElementById('pkgFilter').value,
         tagFilter: document.getElementById('tagFilter').value,
         textFilter: document.getElementById('textFilter').value,
@@ -309,6 +312,9 @@ function applySettings(s) {
     if (s.textFilter) document.getElementById('textFilter').value = s.textFilter;
     if (s.filterLevel) document.getElementById('filterLevel').value = s.filterLevel;
     if (s.termHeight) document.getElementById('bottomTerminalWrap').style.height = s.termHeight;
+    if (typeof s.logSaveEnabled === 'boolean' && s.logSaveEnabled) {
+        logSaveEnabled = false; toggleLogSave();  // 初始 false，调用 toggle 变成 true
+    }
 }
 
 async function loadAllSettings() {
@@ -370,6 +376,8 @@ function connectWebSocket() {
         logCount++;
         if (!matchesFilter(text, filters)) { updateCountDisplay(); return; }
         addLogLine(text);
+        // 日志保存：只保存界面上实际显示的
+        if (logSaveEnabled) { logSaveBuffer.push(text); scheduleLogSaveFlush(); }
         updateCountDisplay();
     };
     ws.onerror = () => {};
@@ -490,6 +498,39 @@ async function clearPhoneBuffer() {
 }
 
 function togglePause() { paused = !paused; updatePauseBtnText(); saveAllSettings(); }
+
+let logSaveEnabled = false;
+const logSaveBuffer = [];
+let _logFlushTimer = null;
+
+function flushLogSaveBuffer() {
+    if (!logSaveBuffer.length) return;
+    const batch = logSaveBuffer.splice(0);
+    fetch('http://localhost:8766/logcat-write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: batch.join('\n')
+    }).catch(() => {});
+}
+function scheduleLogSaveFlush() {
+    if (_logFlushTimer) return;
+    _logFlushTimer = setTimeout(() => { _logFlushTimer = null; flushLogSaveBuffer(); }, 500);
+}
+
+function toggleLogSave() {
+    logSaveEnabled = !logSaveEnabled;
+    const btn = document.getElementById('logSaveBtn');
+    btn.textContent = logSaveEnabled ? L.logSaveOn : L.logSaveOff;
+    if (logSaveEnabled) { btn.classList.add('active'); } else { btn.classList.remove('active'); flushLogSaveBuffer(); }
+    fetch('http://localhost:8766/logcat-toggle?enable=' + (logSaveEnabled ? '1' : '0'))
+        .catch(() => {
+            logSaveEnabled = !logSaveEnabled;
+            btn.textContent = logSaveEnabled ? L.logSaveOn : L.logSaveOff;
+            if (logSaveEnabled) btn.classList.add('active'); else btn.classList.remove('active');
+            showToast('\u274c 日志保存切换失败');
+        });
+    saveAllSettings();
+}
 
 function applyFilters() {
     const filters = getFilters();
