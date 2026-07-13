@@ -4,3 +4,5 @@ __pycache__/
 *.pyo
 logcat_settings.json
 CommandLog/
+上传.bat
+下载.bat
