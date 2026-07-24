@@ -821,6 +821,7 @@ async def main():
     threading.Thread(target=start_http_server, daemon=True).start()
 
     async def route_handler(websocket, path):
+        path = websocket.request.path   # 获取请求路径
         if path == '/terminal':
             await terminal_handler(websocket, path)
         else:
